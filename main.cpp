@@ -166,9 +166,18 @@ private:
 	VkExtent2D swapChainExtent;
 	//to store image views
 	std::vector<VkImageView> swapChainImageViews;
+	//handle for render pass
+	VkRenderPass renderPass;
 	//to pass the transformation matrix to the vertex shader
 	VkPipelineLayout pipelineLayout;
-
+	//pipeline handle
+	VkPipeline graphicsPipeline;
+	//to hold framebuffers
+	std::vector<VkFramebuffer> swapChainFramebuffers;
+	//manage memory for buffers
+	VkCommandPool commandPool;
+	//command buffer for every image in swapchain
+	std::vector<VkCommandBuffer> commandBuffers;
 
 //------</MEMBERS>------
 public:
@@ -293,7 +302,11 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createLogicalDevice();
 		createSwapChain();
 		createImageViews();
+		createRenderPass();
 		createGraphicsPipeline();
+		createFramebuffers();
+		createCommandPool();
+		createCommandBuffers();
 	}
 
 //------</INIT VULKAN>------
@@ -597,6 +610,54 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		}
 	}
 //------</IMAGE VIEWS>------
+//------<RENDER PASS>------
+	//specify framebuffer attachments that will be used while rendering. Pe how many color and depth buffers there will be
+	void createRenderPass() {
+		VkAttachmentDescription colorAttachment{};
+		colorAttachment.format = swapChainImageFormat;
+		//count 1 becaue not multisampling
+		colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
+		//what to do with color,depth data before,after rendering
+		colorAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		//what to do with stencil data
+		colorAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+		colorAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+		//which layout image will have before render pass
+		colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		//transition to layout after render pass - ready for PRESENTATION
+		colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+		//subpasses
+		VkAttachmentReference colorAttachmentRef{};
+		colorAttachmentRef.attachment = 0;
+		colorAttachmentRef.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount = 1;
+		subpass.pColorAttachments = &colorAttachmentRef;
+
+		//create render pass
+		VkRenderPassCreateInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		renderPassInfo.attachmentCount = 1;
+		renderPassInfo.pAttachments = &colorAttachment;
+		renderPassInfo.subpassCount = 1;
+		renderPassInfo.pSubpasses = &subpass;
+
+		if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
+			throw std::runtime_error("failed to create render pass!");
+	}
+
+
+
+
+
+
+
+
+//------</RENDER PASS>------
 //------<GRAPHICS PIPELINE>------
 	//take buffer with bytecode and create a VkShaderModule
 	VkShaderModule createShaderModule(const std::vector<char>& code) {
@@ -743,19 +804,139 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
 		    throw std::runtime_error("failed to create pipeline layout!");
 
+		//create graphics pipeline
+		VkGraphicsPipelineCreateInfo pipelineInfo{};
+		pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+		pipelineInfo.stageCount = 2;
+		pipelineInfo.pStages = shaderStages;
+		//reference fixed-function stage
+		pipelineInfo.pVertexInputState = &vertexInputInfo;
+		pipelineInfo.pInputAssemblyState = &inputAssembly;
+		pipelineInfo.pViewportState = &viewportState;
+		pipelineInfo.pRasterizationState = &rasterizer;
+		pipelineInfo.pMultisampleState = &multisampling;
+		pipelineInfo.pDepthStencilState = nullptr; // Optional
+		pipelineInfo.pColorBlendState = &colorBlending;
+		pipelineInfo.pDynamicState = nullptr; // Optional
+		//ref pipeline layout
+		pipelineInfo.layout = pipelineLayout;
+		//ref render pass & subpass index
+		pipelineInfo.renderPass = renderPass;
+		pipelineInfo.subpass = 0;
+
+		pipelineInfo.basePipelineHandle = VK_NULL_HANDLE; // Optional
+		pipelineInfo.basePipelineIndex = -1; // Optional
+
+		if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &graphicsPipeline) != VK_SUCCESS)
+			throw std::runtime_error("failed to create graphics pipeline!");
+
 
 		vkDestroyShaderModule(device, fragShaderModule, nullptr);
 		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	}
+//------</GRAPHICS PIPELINE>------
+//------<FRAMEBUFFERS>------
+	void createFramebuffers() {
+		swapChainFramebuffers.resize(swapChainImageViews.size());
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			VkImageView attachments[] = {
+				swapChainImageViews[i]
+			};
+
+		VkFramebufferCreateInfo framebufferInfo{};
+		framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		framebufferInfo.renderPass = renderPass;
+		//specify the VkImageView-s that should be bound to the espective attachment descriptions in the render pass pAttachment array
+		framebufferInfo.attachmentCount = 1;
+		framebufferInfo.pAttachments = attachments;
+		framebufferInfo.width = swapChainExtent.width;
+		framebufferInfo.height = swapChainExtent.height;
+		//number of layers in image arrays
+		framebufferInfo.layers = 1;
+
+		if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &swapChainFramebuffers[i]) != VK_SUCCESS)
+			throw std::runtime_error("failed to create framebuffer!");
+		}
+	}
+
+//------</FRAMEBUFFERS>------
+//------<COMMAND POOL>------
+	void createCommandPool(){
+		QueueFamilyIndices queueFamilyIndices = findQueueFamilies(physicalDevice);
+
+		VkCommandPoolCreateInfo poolInfo{};
+		poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+		poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
+		poolInfo.flags = 0; // Optional	
+
+		if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) != VK_SUCCESS)
+			throw std::runtime_error("failed to create command pool!");
+	}
+//------</COMMAND POOL>------
+//------<COMMAND BUFFER>------
+	void createCommandBuffers() {
+		commandBuffers.resize(swapChainFramebuffers.size());
+	
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = commandPool;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = (uint32_t) commandBuffers.size();
+
+		if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) != VK_SUCCESS)
+			throw std::runtime_error("failed to allocate command buffers!");
+
+		//record command buffers
+		for (size_t i = 0; i < commandBuffers.size(); i++) {
+			VkCommandBufferBeginInfo beginInfo{};
+			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+			beginInfo.flags = 0; // Optional
+			beginInfo.pInheritanceInfo = nullptr; // Optional
+
+			if (vkBeginCommandBuffer(commandBuffers[i], &beginInfo) != VK_SUCCESS)
+				throw std::runtime_error("failed to begin recording command buffer!");
+	
+			//drawing starts by beginning the render pass
+			VkRenderPassBeginInfo renderPassInfo{};
+			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+			renderPassInfo.renderPass = renderPass;
+			renderPassInfo.framebuffer = swapChainFramebuffers[i];
+			renderPassInfo.renderArea.offset = {0, 0};
+			renderPassInfo.renderArea.extent = swapChainExtent;
+
+			VkClearValue clearColor = {0.0f, 0.0f, 0.0f, 1.0f};
+			renderPassInfo.clearValueCount = 1;
+			renderPassInfo.pClearValues = &clearColor;
+
+			vkCmdBeginRenderPass(commandBuffers[i], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			//bind graphics pipeline
+			vkCmdBindPipeline(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+
+			//draw
+			vkCmdDraw(commandBuffers[i], 3, 1, 0, 0);
+			
+			//end render pass
+			vkCmdEndRenderPass(commandBuffers[i]);
+		
+			//finish recording
+			if (vkEndCommandBuffer(commandBuffers[i]) != VK_SUCCESS)
+				throw std::runtime_error("failed to record command buffer!");
+		}
 	}
 
 
 
 
-//------</GRAPHICS PIPELINE>------
+
+//------</COMMAND BUFFER>------
+
+//------<>------
 
 
 
 
+
+//------</>------
 //------<MAIN LOOP>------
 	void mainLoop() {
 		while(!glfwWindowShouldClose(window)){
@@ -767,20 +948,29 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 //------</MAIN LOOP>------
 //------</CLEANUP>------
 	void cleanup() {
-		if(enableValidationLayers)
-			DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
-
+		//command pool
+		vkDestroyCommandPool(device, commandPool, nullptr);
+		//framebuffers ?stick them up front
+		for (auto framebuffer : swapChainFramebuffers)
+			vkDestroyFramebuffer(device, framebuffer, nullptr);
+		//graphics pipeline
+		vkDestroyPipeline(device, graphicsPipeline, nullptr);
+		//pipeline layout
+		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+		//render pass
+		vkDestroyRenderPass(device, renderPass, nullptr);
 		//image views
 		for (auto imageView : swapChainImageViews)
 			vkDestroyImageView(device, imageView, nullptr);
 		//swap chain
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
-		//pipeline
-		vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 		//logdev
 		vkDestroyDevice(device, nullptr);
 		//window surface
 		vkDestroySurfaceKHR(instance, surface, nullptr);
+		//debug
+		if(enableValidationLayers)
+			DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 		//instance
 		vkDestroyInstance(instance, nullptr);
 
