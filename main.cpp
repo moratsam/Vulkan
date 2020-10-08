@@ -10,6 +10,7 @@
 #include <set>
 #include <cstdint>
 #include <algorithm>
+#include <fstream>
 
 
 //------<CONSTS & MACROS>------
@@ -119,6 +120,25 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance, VkDebugUtilsMessengerEXT
 	}
 }
 
+//LOAD SHADERS
+static std::vector<char> readFile(const std::string& filename) {
+	//start reading in binary at end of file
+	std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+	if (!file.is_open())
+		throw std::runtime_error("failed to open file!");
+	//use read position to define necessary buffer size
+	size_t fileSize = (size_t) file.tellg();
+	std::vector<char> buffer(fileSize);
+	//seek to beginning of file and read all bytes at once
+	file.seekg(0);
+	file.read(buffer.data(), fileSize);
+	//close file
+	file.close();
+
+	return buffer;
+}
+
 //------</HELPERS>------
 
 //------ <CLASS TRIANGLE> ------
@@ -144,6 +164,8 @@ private:
 	//format and extent of swapchain images
 	VkFormat swapChainImageFormat;
 	VkExtent2D swapChainExtent;
+	//to store image views
+	std::vector<VkImageView> swapChainImageViews;
 
 
 //------</MEMBERS>------
@@ -268,6 +290,8 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
+		createImageViews();
+		createGraphicsPipeline();
 	}
 
 //------</INIT VULKAN>------
@@ -543,6 +567,87 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 	}
 
 //------</SWAP CHAIN>------
+//------<IMAGE VIEWS>------
+	void createImageViews() {
+		swapChainImageViews.resize(swapChainImages.size());
+
+		for(size_t i=0; i<swapChainImages.size(); i++){
+			VkImageViewCreateInfo createInfo{};
+			createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			createInfo.image = swapChainImages[i];
+			//type as 1D or 3D textures and cube maps
+			createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			createInfo.format = swapChainImageFormat;
+			//swizzle color channels; pe map all to red to get monochrome
+			createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+			//what the image purpose is and which part of image to access
+			createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			createInfo.subresourceRange.baseMipLevel = 0;
+			createInfo.subresourceRange.levelCount = 1;
+			createInfo.subresourceRange.baseArrayLayer = 0;
+			createInfo.subresourceRange.layerCount = 1;
+
+			if (vkCreateImageView(device, &createInfo, nullptr, &swapChainImageViews[i]) != VK_SUCCESS)
+				throw std::runtime_error("failed to create image views!");
+		}
+	}
+//------</IMAGE VIEWS>------
+//------<GRAPHICS PIPELINE>------
+	//take buffer with bytecode and create a VkShaderModule
+	VkShaderModule createShaderModule(const std::vector<char>& code) {
+		VkShaderModuleCreateInfo createInfo{};
+		createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		createInfo.codeSize = code.size();
+		createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+
+		VkShaderModule shaderModule;
+		if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) != VK_SUCCESS)
+			throw std::runtime_error("failed to create shader module!");
+
+		//free(code);
+		return shaderModule;
+	}
+
+	void createGraphicsPipeline(){
+		auto vertShaderCode = readFile("shaders/vert.spv");
+		auto fragShaderCode = readFile("shaders/frag.spv");
+		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
+		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+
+		//to use shaders assign them to specific pipeline stage
+		VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
+		vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		//specify module containing the code
+		vertShaderStageInfo.module = vertShaderModule;
+		//specify function to invoke
+		vertShaderStageInfo.pName = "main";
+
+		//same for frag shader
+		VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
+		fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+		fragShaderStageInfo.module = fragShaderModule;
+		fragShaderStageInfo.pName = "main";
+
+		//used to ref them in actual pipeline creation step
+		VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
+
+		vkDestroyShaderModule(device, fragShaderModule, nullptr);
+		vkDestroyShaderModule(device, vertShaderModule, nullptr);
+	}
+
+
+
+
+//------</GRAPHICS PIPELINE>------
+
+
+
+
 //------<MAIN LOOP>------
 	void mainLoop() {
 		while(!glfwWindowShouldClose(window)){
@@ -556,6 +661,10 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 	void cleanup() {
 		if(enableValidationLayers)
 			DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
+
+		//image views
+		for (auto imageView : swapChainImageViews)
+			vkDestroyImageView(device, imageView, nullptr);
 		//swap chain
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		//logdev
