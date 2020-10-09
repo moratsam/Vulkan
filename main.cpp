@@ -178,6 +178,10 @@ private:
 	VkCommandPool commandPool;
 	//command buffer for every image in swapchain
 	std::vector<VkCommandBuffer> commandBuffers;
+	//ready for rendering
+	VkSemaphore imageAvailableSemaphore;
+	//ready for presentation
+	VkSemaphore renderFinishedSemaphore;
 
 //------</MEMBERS>------
 public:
@@ -307,6 +311,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createFramebuffers();
 		createCommandPool();
 		createCommandBuffers();
+		createSemaphores();
 	}
 
 //------</INIT VULKAN>------
@@ -646,14 +651,24 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		renderPassInfo.subpassCount = 1;
 		renderPassInfo.pSubpasses = &subpass;
 
+		//adding as per 'rend and pres'
+		VkSubpassDependency dependency{};
+		dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependency.dstSubpass = 0;
+
+		//wait for color attachment
+		dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependency.srcAccessMask = 0;
+
+		dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		renderPassInfo.dependencyCount = 1;
+		renderPassInfo.pDependencies = &dependency;
+
 		if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) != VK_SUCCESS)
 			throw std::runtime_error("failed to create render pass!");
+
 	}
-
-
-
-
-
 
 
 
@@ -923,24 +938,80 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 				throw std::runtime_error("failed to record command buffer!");
 		}
 	}
-
-
-
-
-
 //------</COMMAND BUFFER>------
+//------<SEMAPHORES>------
+	void createSemaphores(){
+		VkSemaphoreCreateInfo semaphoreInfo{};
+    	semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-//------<>------
+		if (vkCreateSemaphore(device, &semaphoreInfo, nullptr, &imageAvailableSemaphore) != VK_SUCCESS ||
+    vkCreateSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedSemaphore) != VK_SUCCESS)
+	 	throw std::runtime_error("failed to create semaphores!");
+	}
+//------</SEMAPHORES>------
+//------<DRAW FRAME>------
+	void drawFrame(){
+		uint32_t imageIndex;
+		vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, imageAvailableSemaphore, VK_NULL_HANDLE, &imageIndex);
+
+		//which semaphores to wait on before execution begins and in which stage(s) of the pipeline to wait.
+		VkSubmitInfo submitInfo{};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+		VkSemaphore waitSemaphores[] = {imageAvailableSemaphore};
+		VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+		submitInfo.waitSemaphoreCount = 1;
+		submitInfo.pWaitSemaphores = waitSemaphores;
+		submitInfo.pWaitDstStageMask = waitStages;
+
+		//submit buffers for execution
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &commandBuffers[imageIndex];
+
+		//which semaphores to signal once command buffer finished execution
+		VkSemaphore signalSemaphores[] = {renderFinishedSemaphore};
+		submitInfo.signalSemaphoreCount = 1;
+		submitInfo.pSignalSemaphores = signalSemaphores;
+
+		//submit command buffer to graphics queue
+		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS)
+			throw std::runtime_error("failed to submit draw command buffer!");
+
+
+		//configure presentation
+		VkPresentInfoKHR presentInfo{};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+		presentInfo.waitSemaphoreCount = 1;
+		presentInfo.pWaitSemaphores = signalSemaphores;
+
+		VkSwapchainKHR swapChains[] = {swapChain};
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = swapChains;
+		presentInfo.pImageIndices = &imageIndex;
+
+		//to check result in case of multiple swap chains
+		presentInfo.pResults = nullptr; // Optional
+
+		vkQueuePresentKHR(presentQueue, &presentInfo);
+
+
+
+	}
 
 
 
 
 
-//------</>------
+
+
+
+//------</DRAW FRAME>------
 //------<MAIN LOOP>------
 	void mainLoop() {
 		while(!glfwWindowShouldClose(window)){
 			glfwPollEvents();
+			drawFrame();
 		}
 
 	}
@@ -948,6 +1019,10 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 //------</MAIN LOOP>------
 //------</CLEANUP>------
 	void cleanup() {
+
+		//semaphores
+		vkDestroySemaphore(device, renderFinishedSemaphore, nullptr);
+		vkDestroySemaphore(device, imageAvailableSemaphore, nullptr);
 		//command pool
 		vkDestroyCommandPool(device, commandPool, nullptr);
 		//framebuffers ?stick them up front
