@@ -1,8 +1,14 @@
 #define GLFW_INCLUDE_VULKAN
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/hash.hpp>
+
+#define GLM_FORCE_DEFAULT_ALIGNED_GENTYPES
 
 #include <iostream>
 #include <stdexcept>
@@ -14,18 +20,22 @@
 #include <cstdint>
 #include <algorithm>
 #include <fstream>
-#include <glm/glm.hpp>
 #include <array>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <chrono>
+#include <unordered_map>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#define TINYOBJLOADER_IMPLEMENTATION
+#include <tiny_obj_loader.h>
+
 //------<CONSTS & MACROS>------
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+
+const std::string MODEL_PATH = "models/viking_room.obj";
+const std::string TEXTURE_PATH = "textures/viking_room.png";
 
 #ifdef NDEBUG
 	const bool enableValidationLayers = false;
@@ -42,13 +52,6 @@ const std::vector<const char*> deviceExtensions = {
 };
 
 const int MAX_FRAMES_IN_FLIGHT = 2;
-
-const std::vector<uint16_t> indices = {
-//	0, 1, 2, 2, 3, 0,
-//	4, 5, 6, 6, 7, 4
-	0, 1, 2,
-	4, 5, 6, 6, 7, 0
-};
 
 //------</CONSTS & MACROS>------
 //------<STRUCTS>------
@@ -106,19 +109,24 @@ struct Vertex{
 
 		return attributeDescriptions;
 	}
+
+	//redefine equality test to use struct as key in hash table (map())
+	bool operator==(const Vertex& other) const{
+		return pos == other.pos && color == other.color && texCoord == other.texCoord;
+	}
 };
 
-const std::vector<Vertex> vertices = {
-	{{-0.9f, -0.9f, 0.0f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.9f, -0.9f, 0.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.9f, 0.9f, 0.0f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.9f, 0.9f, 0.0f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}},
+//implement Vertex hash funtion to use Vertex in map()
+namespace std{
+	template<> struct hash<Vertex>{
+		size_t operator()(Vertex const& vertex) const{
+			return ((hash<glm::vec3>()(vertex.pos) ^
+						(hash<glm::vec3>()(vertex.color) << 1)) >> 1) ^
+						(hash<glm::vec2>()(vertex.texCoord) << 1);
+		}
+	};
+}
 
-	{{-0.9f, -0.9f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-	{{0.9f, -0.9f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-	{{0.9f, 0.9f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-	{{-0.9f, 0.9f, -0.5f}, {1.0f, 1.0f, 1.0f}, {0.0f, 1.0f}}
-};
 
 struct UniformBufferObject{
 	alignas(16) glm::mat4 model;
@@ -286,6 +294,8 @@ private:
 	VkImageView textureImageView;
 	VkSampler textureSampler;
 
+	std::vector<Vertex> vertices;
+	std::vector<uint32_t> indices;
 	//vertex buffer
 	VkBuffer vertexBuffer;
 	//vertex buffer memory
@@ -424,6 +434,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
+		loadModel();
 		createVertexBuffer();
 		createIndexBuffer();
 		createUniformBuffers();
@@ -1150,7 +1161,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 			VkBuffer vertexBuffers[] = {vertexBuffer};
 			VkDeviceSize offsets[] = {0};
 			vkCmdBindVertexBuffers(commandBuffers[i], 0, 1, vertexBuffers, offsets);
-			vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+			vkCmdBindIndexBuffer(commandBuffers[i], indexBuffer, 0, VK_INDEX_TYPE_UINT32);
 
 			//bind descriptor set for each swap chain image to the descriptors in shader
 			vkCmdBindDescriptorSets(commandBuffers[i], VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSets[i], 0, nullptr);
@@ -1553,7 +1564,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 void createTextureImage() {
 		//texture size
 		int texWidth, texHeight, texChannels;
-		stbi_uc* pixels = stbi_load("textures/texture.png", &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+		stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
 		VkDeviceSize imageSize = texWidth * texHeight * 4;
 
 		if (!pixels) {
@@ -1759,6 +1770,59 @@ void createTextureImage() {
 		createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, depthImage, depthImageMemory);
 		//create image view
 		depthImageView = createImageView(depthImage, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+	}
+
+//------</DEPTH>------
+//------<LOAD MODEL>------
+	void loadModel() {
+		tinyobj::attrib_t attrib;
+		std::vector<tinyobj::shape_t> shapes;
+		std::vector<tinyobj::material_t> materials;
+		std::string warn, err;
+
+		if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &warn, &err, MODEL_PATH.c_str())) {
+			throw std::runtime_error(warn + err);
+		}
+
+		std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
+		for(const auto& shape : shapes){
+			for(const auto& index : shape.mesh.indices){
+				Vertex vertex{};
+
+				//3* cus every vertex has position as 3 floats
+				vertex.pos = {
+					attrib.vertices[3 * index.vertex_index + 0],
+					attrib.vertices[3 * index.vertex_index + 1],
+					attrib.vertices[3 * index.vertex_index + 2]
+				};
+
+				vertex.texCoord = {
+					attrib.texcoords[2 * index.texcoord_index + 0],
+					//flip to make OBJ format vulkan compliant
+					1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+				};
+
+				vertex.color = {1.0f, 1.0f, 1.0f};
+
+				//if this vertex is new
+				if(uniqueVertices.count(vertex) == 0){
+					//map it to its index in vertices (vertices.size() since it will be pushed back to last position)
+					uniqueVertices[vertex] = static_cast<uint32_t>(vertices.size());
+					//add it to vertices
+					vertices.push_back(vertex);
+				}
+
+				//get index of current vertice via mapped index in uniqueVertices
+				indices.push_back(uniqueVertices[vertex]);
+
+			}
+		}
+
+
+
+
+
 
 
 
@@ -1769,29 +1833,7 @@ void createTextureImage() {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-//------</DEPTH>------
-//------<>------
-//------<>------
+//------</LOAD MODEL>------
 //------<>------
 //------<>------
 //------<MAIN LOOP>------
@@ -1813,6 +1855,8 @@ void createTextureImage() {
 		vkDestroyImage(device, depthImage, nullptr);
 		vkFreeMemory(device, depthImageMemory, nullptr);
 	
+		std::unordered_map<Vertex, uint32_t> uniqueVertices{};
+
 		//framebuffers 
 		for (auto framebuffer : swapChainFramebuffers){
 			vkDestroyFramebuffer(device, framebuffer, nullptr);
