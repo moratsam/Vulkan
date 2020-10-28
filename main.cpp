@@ -128,6 +128,20 @@ struct UniformBufferObject{
 	alignas(16) glm::mat4 proj;
 };
 
+struct FramebufferAttachment{
+	VkImage image;
+	VkDeviceMemory mem;
+	VkImageView view;
+};
+
+struct OffscreenPass{
+	int32_t width, height;
+	VkFramebuffer framebuffer;
+	FramebufferAttachment color, depth;
+	VkRenderPass renderPass;
+	VkSampler sampler;
+	VkDescriptorImageInfo descriptor;
+} offscreenPass;
 
 //------</STRUCTS>------
 //------<HELPERS>------
@@ -234,7 +248,7 @@ public:
 		initVulkan();
 		mainLoop();
 		cleanupDump();
-		//cleanup();
+		cleanup();
 	}
 
 //------<MEMBERS>------
@@ -442,10 +456,10 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
-		//createUniformBuffers();
-		//createDescriptorPool();
-		//createDescriptorSets();
-		//createCommandBuffers();
+		createUniformBuffers();
+		createDescriptorPool();
+		createDescriptorSets();
+		createCommandBuffers();
 		createSyncObjects();
 
 		createResourcesDump();
@@ -1749,6 +1763,29 @@ void createTextureImage() {
 		endSingleTimeCommands(commandBuffer);
 	}
 
+	void createSampler(VkSampler& sampler){
+		VkSamplerCreateInfo samplerInfo{};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		//regarding under/over sampling
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		//what to do with texture on axis when going beyond image dimensions (not gonna sample outside)
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.maxAnisotropy = 1.0f;
+		//for mipmap
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerInfo.mipLodBias = 0.0f;
+		samplerInfo.minLod = 0.0f;
+		samplerInfo.maxLod = 1.0f;
+		samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+
+		if (vkCreateSampler(device, &samplerInfo, nullptr, &sampler) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create custom sampler!");
+		}
+	}
+
 	void createTextureSampler(){
 		VkSamplerCreateInfo samplerInfo{};
 		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -2213,6 +2250,9 @@ void createTextureImage() {
 		vkDestroyImageView(device, dumpImageView, nullptr);
 		vkFreeMemory(device, dumpImageMemory, nullptr);
 		vkDestroyImage(device, dumpImage, nullptr);
+		vkDestroyBuffer(device, dumpUniformBuffers, nullptr);
+		vkFreeMemory(device, dumpUniformBuffersMemory, nullptr);
+		vkDestroyDescriptorPool(device, dumpDescriptorPool, nullptr);
 
 
 	}
@@ -2225,13 +2265,11 @@ void createTextureImage() {
 //------<>------
 //------<MAIN LOOP>------
 	void mainLoop() {
-	/*
+		dump();
 		while(!glfwWindowShouldClose(window)){
 			glfwPollEvents();
 			drawFrame();
 		}
-	*/
-		dump();
 		vkDeviceWaitIdle(device);
 
 	}
