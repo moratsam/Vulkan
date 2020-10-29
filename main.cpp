@@ -26,6 +26,7 @@
 //------<CONSTS & MACROS>------
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
+#define COLOR_FORMAT VK_FORMAT_R8G8B8A8_SRGB
 
 const std::string path = "/home/o/color.ppm/";
 
@@ -134,14 +135,19 @@ struct FramebufferAttachment{
 	VkImageView view;
 };
 
-struct OffscreenPass{
+struct Offscreen{
 	int32_t width, height;
-	VkFramebuffer framebuffer;
-	FramebufferAttachment color, depth;
+	VkFramebuffer baseFramebuffer, maskFramebuffer;
+	FramebufferAttachment baseColor, maskColor, depth;
 	VkRenderPass renderPass;
-	VkSampler sampler;
-	VkDescriptorImageInfo descriptor;
-} offscreenPass;
+	VkPipelineLayout basePipelineLayout, maskPipelineLayout;
+	VkPipeline baseGraphicsPipeline, maskGraphicsPipeline;
+	VkBuffer uniformBuffer;
+	VkDeviceMemory uniformBufferMemory;
+	VkDescriptorPool descriptorPool;
+	VkDescriptorSet descriptorSet;
+	VkCommandBuffer baseCommandBuffer, maskCommandBuffer;
+} offscreen;
 
 //------</STRUCTS>------
 //------<HELPERS>------
@@ -247,7 +253,7 @@ public:
 		initWindow();
 		initVulkan();
 		mainLoop();
-		cleanupDump();
+		cleanupOffscreen();
 		cleanup();
 	}
 
@@ -280,17 +286,17 @@ private:
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
 	//DUMP
+	/*
 	VkImage dumpImage;
 	VkDeviceMemory dumpImageMemory;
 	VkImageView dumpImageView;
 	VkFramebuffer dumpFramebuffer;
 	VkBuffer dumpUniformBuffers;
 	VkDeviceMemory dumpUniformBuffersMemory;
-	VkDescriptorSetLayout dumpDescriptorSetLayout;
 	VkDescriptorPool dumpDescriptorPool;
 	VkDescriptorSet dumpDescriptorSets;
 	VkCommandBuffer dumpCommandBuffer;
-
+	*/
 	
 	//handle for render pass
 	VkRenderPass renderPass;
@@ -444,30 +450,34 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createSwapChain();
-		createImageViews();
-		createRenderPass();
+//		createImageViews();
+//		createRenderPass(swapChainImageFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, renderPass);
 		createDescriptorSetLayout();
-		createGraphicsPipeline();
+//		createGraphicsPipeline(0, renderPass, graphicsPipeline, pipelineLayout);
 		createCommandPool();
-		createDepthResources();
-		createFramebuffers();
+//		createDepthResources();
+//		createFramebuffers();
 		createTextureImage();
 		createTextureImageView();
 		createTextureSampler();
 		createVertexBuffer();
 		createIndexBuffer();
-		createUniformBuffers();
-		createDescriptorPool();
-		createDescriptorSets();
-		createCommandBuffers();
-		createSyncObjects();
+//		createUniformBuffers();
+//		createDescriptorPool();
+//		createDescriptorSets();
+//		createCommandBuffers();
+//		createSyncObjects();
 
+		/*
 		createResourcesDump();
 		createFramebufferDump();
 		createUniformBuffersDump();
 		createDescriptorPoolDump();
 		createDescriptorSetsDump();
 		createCommandBufferDump();
+		*/
+
+		prepareOffscreen();
 	}
 
 //------</INIT VULKAN>------
@@ -779,8 +789,8 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 
 		createSwapChain();
 		createImageViews();
-		createRenderPass();
-		createGraphicsPipeline();
+		createRenderPass(swapChainImageFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, renderPass);
+		createGraphicsPipeline(0, renderPass, graphicsPipeline, pipelineLayout);
 		createDepthResources();
 		createFramebuffers();
 		createUniformBuffers();
@@ -825,10 +835,10 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 //------</IMAGE VIEWS>------
 //------<RENDER PASS>------
 	//specify framebuffer attachments that will be used while rendering. Pe how many color and depth buffers there will be
-	void createRenderPass() {
+	void createRenderPass(VkFormat colorFormat, VkImageLayout finalColorLayout, VkRenderPass& renderPass) {
 		//color attachment
 		VkAttachmentDescription colorAttachment{};
-		colorAttachment.format = swapChainImageFormat;
+		colorAttachment.format = colorFormat;
 		//count 1 becaue not multisampling
 		colorAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
 		//what to do with color,depth data before,after rendering
@@ -840,7 +850,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		//which layout image will have before render pass
 		colorAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		//transition to layout after render pass - ready for PRESENTATION
-		colorAttachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		colorAttachment.finalLayout = finalColorLayout;
 
 		//depth attachment
 		VkAttachmentDescription depthAttachment{};
@@ -918,9 +928,16 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		return shaderModule;
 	}
 
-	void createGraphicsPipeline(){
-		auto vertShaderCode = readFile("shaders/vert.spv");
-		auto fragShaderCode = readFile("shaders/frag.spv");
+	void createGraphicsPipeline(bool mask, VkRenderPass& renderPass, VkPipeline& graphicsPipeline, VkPipelineLayout& pipelineLayout){
+		std::vector<char> vertShaderCode, fragShaderCode;
+		if(mask){
+			vertShaderCode = readFile("shaders/mask_vert.spv");
+			fragShaderCode = readFile("shaders/mask_frag.spv");
+		}
+		else{
+			vertShaderCode = readFile("shaders/vert.spv");
+			fragShaderCode = readFile("shaders/frag.spv");	
+		}
 		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
 		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
@@ -993,7 +1010,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		rasterizer.depthClampEnable = VK_FALSE;
 		rasterizer.rasterizerDiscardEnable = VK_FALSE;
 		//If fragment fills whole polygon/ just edge/point
-		rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+		rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
 
 		rasterizer.lineWidth = 3.0f;
 		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -1481,7 +1498,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 
 		if (glfwGetKey(window, GLFW_KEY_F4) == GLFW_PRESS) {
 			auto color_file_name = "/home/o/color.ppm";
-			saveOutputColorTexture(color_file_name, currentImage);
+			saveOutputColorTexture(color_file_name, swapChainImages[currentImage]);
 		}
 
 	}
@@ -1862,46 +1879,42 @@ void createTextureImage() {
 //------<DUMP>------
 
 
-
-	
-
-	void saveOutputColorTexture(const std::string& path, uint32_t imageIndex){
-		bool supportsBlit = true;
-
+	bool checkBlitSupport(VkFormat format){
 		// Check blit support for source and destination
 		VkFormatProperties formatProps;
 
 		// Check if the device supports blitting from optimal images (the swapchain images are in optimal format)
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, swapChainImageFormat, &formatProps);
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProps);
 		if (!(formatProps.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) {
 			std::cerr << "Device does not support blitting from optimal tiled images, using copy instead of blit!" << std::endl;
-			supportsBlit = false;
+			return false;
 		}
 
 		// Check if the device supports blitting to linear images 
-		vkGetPhysicalDeviceFormatProperties(physicalDevice, swapChainImageFormat, &formatProps);
+		vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &formatProps);
 		if (!(formatProps.linearTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT)) {
 			std::cerr << "Device does not support blitting to linear tiled images, using copy instead of blit!" << std::endl;
-			supportsBlit = false;
+			return false;
 		}
 
-		// Source for the copy is the last rendered swapchain image
-		VkImage srcImage = dumpImage;
-		//std::cout << "a sm kurba tuki" << std::endl << std::endl;
+		return true;
+	}
 
-		// Create the linear tiled destination image to copy to and to read the memory from
+	//srcLayout = srcOldLayout = srcNewLayout
+	void blit(VkImage& srcImage, VkImageLayout srcLayout, VkImage& dstImage, VkImageLayout dstOldLayout, VkImageLayout dstNewLayout){
 		// Note that vkCmdBlitImage (if supported) will also do format conversions if the swapchain color format would differ
-		VkImage dstImage;
-		VkDeviceMemory dstImageMemory;
-		createImage(swapChainExtent.width, swapChainExtent.height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, dstImage, dstImageMemory);
-
-
-		// Do the actual blit from the swapchain image to our host visible destination image
+		bool supportsBlit = checkBlitSupport(swapChainImageFormat);
+	
+		// Transition swapchain image to  transfer source layout
+		if(srcLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL){
+			transitionImageLayout(srcImage, srcLayout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		}
 		// Transition destination image to transfer destination layout
-		transitionImageLayout(dstImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-		// Transition swapchain image from present to transfer source layout
-		transitionImageLayout(srcImage, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		if(dstOldLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){
+			transitionImageLayout(dstImage, dstOldLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+		}
 
+		// Do the actual blit from the src image to our host visible destination image
 		//create blit/copy command buffer
 		VkCommandBuffer copyCmd = beginSingleTimeCommands();
 
@@ -1909,8 +1922,8 @@ void createTextureImage() {
 		if (supportsBlit){
 			// Define the region to blit (we will blit the whole swapchain image)
 			VkOffset3D blitSize;
-			blitSize.x = swapChainExtent.width;
-			blitSize.y = swapChainExtent.height;
+			blitSize.x = WIDTH;
+			blitSize.y = HEIGHT;
 			blitSize.z = 1;
 			VkImageBlit imageBlitRegion{};
 			imageBlitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1951,12 +1964,29 @@ void createTextureImage() {
 
 		endSingleTimeCommands(copyCmd);
 
-		// Transition destination image to general layout, which is the required layout for mapping the image memory later on
-		transitionImageLayout(dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL);
-		// Transition back the swap chain image after the blit is done
-		transitionImageLayout(srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
 
-		// Get layout of the image (including row pitch)
+		// Transition back the src image after the blit is done
+		if(srcLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL){
+			transitionImageLayout(srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, srcLayout);
+		}
+		// Transition destination image to new layout
+		if(dstNewLayout != VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL){
+			transitionImageLayout(dstImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, dstNewLayout);
+		}
+	}
+
+	void saveOutputColorTexture(const std::string& path, VkImage& srcImage){
+
+		// Create the linear tiled destination image to copy to and to read the memory from
+		// Note that vkCmdBlitImage (if supported) will also do format conversions if the swapchain color format would differ
+		VkImage dstImage;
+		VkDeviceMemory dstImageMemory;
+		createImage(swapChainExtent.width, swapChainExtent.height, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, dstImage, dstImageMemory);
+
+		// Transition destination image to general layout, which is the required layout for mapping the image memory later on
+		blit(srcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dstImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL);
+
+	// Get layout of the image (including row pitch)
 		VkImageSubresource subResource{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0 };
 		VkSubresourceLayout subResourceLayout;
 		vkGetImageSubresourceLayout(device, dstImage, &subResource, &subResourceLayout);
@@ -1975,6 +2005,7 @@ void createTextureImage() {
 		bool colorSwizzle = false;
 		// Check if source is BGR 
 		// Note: Not complete, only contains most common and basic BGR surface formats for demonstation purposes
+		bool supportsBlit = checkBlitSupport(swapChainImageFormat);
 		if (!supportsBlit)
 		{
 			std::vector<VkFormat> formatsBGR = { VK_FORMAT_B8G8R8A8_SRGB, VK_FORMAT_B8G8R8A8_UNORM, VK_FORMAT_B8G8R8A8_SNORM };
@@ -2015,54 +2046,9 @@ void createTextureImage() {
 
 	}
 
-
-
-
-
-
-
-	void createResourcesDump(){
-		//create image
-		createImage(swapChainExtent.width, swapChainExtent.height, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, dumpImage, dumpImageMemory);
-		//create image view
-		dumpImageView = createImageView(dumpImage, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_ASPECT_COLOR_BIT);
-	}
-
-
-	void createFramebufferDump() {
-
-			std::array<VkImageView, 2> attachments = {
-				 dumpImageView,
-				 depthImageView
-			};
-
-			VkFramebufferCreateInfo framebufferInfo{};
-			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-			framebufferInfo.renderPass = renderPass;
-			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
-			framebufferInfo.pAttachments = attachments.data();
-			framebufferInfo.width = swapChainExtent.width;
-			framebufferInfo.height = swapChainExtent.height;
-			framebufferInfo.layers = 1;
-
-			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &dumpFramebuffer) != VK_SUCCESS) {
-				 throw std::runtime_error("failed to create dump framebuffer!");
-			}
-	}
-
-
-
-
-
-
-
-	void createUniformBuffersDump(){
-		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-		createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, dumpUniformBuffers, dumpUniformBuffersMemory);
-	}
-
-	void updateUniformBufferDump(){
+//---------------------------------OFFSCREEN------------------------------------------------------
+	
+	void updateUniformBufferOffscreen(){
 		
 		static auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -2072,23 +2058,23 @@ void createTextureImage() {
 		UniformBufferObject ubo{};
 		ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(45.0f), glm::vec3(0.0f, 0.0f, 1.0f));
 		ubo.view = glm::lookAt(glm::vec3(3.0f, 3.0f, 3.5f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.proj = glm::perspective(glm::radians(30.0f), swapChainExtent.width / (float) swapChainExtent.height, 0.1f, 10.0f);
+		ubo.proj = glm::perspective(glm::radians(30.0f), offscreen.width / (float) offscreen.height, 0.1f, 10.0f);
 		ubo.proj[1][1] *= -1;
 
 		void* data;
-		vkMapMemory(device, dumpUniformBuffersMemory, 0, sizeof(ubo), 0, &data);
+		vkMapMemory(device, offscreen.uniformBufferMemory, 0, sizeof(ubo), 0, &data);
 		memcpy(data, &ubo, sizeof(ubo));
-		vkUnmapMemory(device, dumpUniformBuffersMemory);
+		vkUnmapMemory(device, offscreen.uniformBufferMemory);
 	/*
 		if (glfwGetKey(window, GLFW_KEY_F4) == GLFW_PRESS) {
 			auto color_file_name = "/home/o/color.ppm";
-			saveOutputColorTexture(color_file_name, currentImage);
+			saveOutputColorTexture(color_file_name, swapChainImages[currentImage]);
 		}
 	*/
 	}
 
 
-	void createDescriptorPoolDump(){
+	void createDescriptorPoolOffscreen(){
 		std::array<VkDescriptorPoolSize, 2> poolSizes{};
 		//uniform buffer
 		poolSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -2101,34 +2087,34 @@ void createTextureImage() {
 		poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 		poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
 		poolInfo.pPoolSizes = poolSizes.data();
-		poolInfo.maxSets = 3;
+		poolInfo.maxSets = 1;
 		
-		if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &dumpDescriptorPool) != VK_SUCCESS) {
-			throw std::runtime_error("failed to create dump descriptor pool!");
+		if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &offscreen.descriptorPool) != VK_SUCCESS) {
+			throw std::runtime_error("failed to create offscreen descriptor pool!");
 		}
 	}
 
 
-	void createDescriptorSetsDump(){
+	void createDescriptorSetOffscreen(){
 		std::vector<VkDescriptorSetLayout> layouts(1, descriptorSetLayout);
 		//how many sets to allocate, based on what descriptor layout	
 		VkDescriptorSetAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-		allocInfo.descriptorPool = dumpDescriptorPool;
+		allocInfo.descriptorPool = offscreen.descriptorPool;
 		//one descriptor set for each swap image, all with same layout
 		allocInfo.descriptorSetCount = 1;
 		allocInfo.pSetLayouts = layouts.data();
 
 		//allocate sets
-		descriptorSets.resize(swapChainImages.size());
-		if (vkAllocateDescriptorSets(device, &allocInfo, &dumpDescriptorSets) != VK_SUCCESS) {
+		descriptorSets.resize(1);
+		if (vkAllocateDescriptorSets(device, &allocInfo, &offscreen.descriptorSet) != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate dump descriptor sets!");
 		}
 
 		//populate
 		//uniform buffer
 		VkDescriptorBufferInfo bufferInfo{};
-		bufferInfo.buffer = dumpUniformBuffers;
+		bufferInfo.buffer = offscreen.uniformBuffer;
 		bufferInfo.offset = 0;
 		bufferInfo.range = sizeof(UniformBufferObject);
 
@@ -2144,7 +2130,7 @@ void createTextureImage() {
 		//uniform buffer
 		descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		//destination
-		descriptorWrites[0].dstSet = dumpDescriptorSets;
+		descriptorWrites[0].dstSet = offscreen.descriptorSet;
 		descriptorWrites[0].dstBinding = 0;
 		descriptorWrites[0].dstArrayElement = 0;
 		descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -2156,7 +2142,7 @@ void createTextureImage() {
 		//image sampler
 		descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		//destination
-		descriptorWrites[1].dstSet = dumpDescriptorSets;
+		descriptorWrites[1].dstSet = offscreen.descriptorSet;
 		descriptorWrites[1].dstBinding = 1;
 		descriptorWrites[1].dstArrayElement = 0;
 		descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -2166,32 +2152,53 @@ void createTextureImage() {
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 	}
 
+	void createFramebufferOffscreen(VkImageView& colorView, VkImageView& depthView, VkFramebuffer& framebuffer) {
 
-	void createCommandBufferDump() {
+			std::array<VkImageView, 2> attachments = {
+				 colorView,
+				 depthView
+			};
 
+			VkFramebufferCreateInfo framebufferInfo{};
+			framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			framebufferInfo.renderPass = offscreen.renderPass;
+			framebufferInfo.attachmentCount = static_cast<uint32_t>(attachments.size());
+			framebufferInfo.pAttachments = attachments.data();
+			framebufferInfo.width = offscreen.width;
+			framebufferInfo.height = offscreen.height;
+			framebufferInfo.layers = 1;
+
+			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
+				 throw std::runtime_error("failed to create offscreen framebuffer!");
+			}
+	}
+
+
+	void createCommandBufferOffscreen(VkCommandBuffer& commandBuffer, VkFramebuffer& framebuffer, VkPipeline& graphicsPipeline, VkPipelineLayout& pipelineLayout) {
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.commandPool = commandPool;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocInfo.commandBufferCount = 1;
 
-		if (vkAllocateCommandBuffers(device, &allocInfo, &dumpCommandBuffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate dump command buffer!");
+		if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate offscreen command buffer!");
 		}
 
 			VkCommandBufferBeginInfo beginInfo{};
 			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-			if (vkBeginCommandBuffer(dumpCommandBuffer, &beginInfo) != VK_SUCCESS) {
-				 throw std::runtime_error("failed to begin recording dump command buffer!");
+			if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+				 throw std::runtime_error("failed to begin recording offscreen command buffer!");
 			}
 
 			VkRenderPassBeginInfo renderPassInfo{};
 			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-			renderPassInfo.renderPass = renderPass;
-			renderPassInfo.framebuffer = dumpFramebuffer;
+			renderPassInfo.renderPass = offscreen.renderPass;
+			renderPassInfo.framebuffer = framebuffer;
 			renderPassInfo.renderArea.offset = {0, 0};
-			renderPassInfo.renderArea.extent = swapChainExtent;
+			renderPassInfo.renderArea.extent.width = offscreen.width;
+			renderPassInfo.renderArea.extent.height= offscreen.height;
 
 			std::array<VkClearValue, 2> clearValues{};
 			clearValues[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
@@ -2199,62 +2206,121 @@ void createTextureImage() {
 			renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 			renderPassInfo.pClearValues = clearValues.data();
 
-			vkCmdBeginRenderPass(dumpCommandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-			vkCmdBindPipeline(dumpCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
 
 			VkBuffer vertexBuffers[] = {vertexBuffer};
 			VkDeviceSize offsets[] = {0};
-			vkCmdBindVertexBuffers(dumpCommandBuffer, 0, 1, vertexBuffers, offsets);
-			vkCmdBindIndexBuffer(dumpCommandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+			vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
+			vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
 			//bind descriptor set for each swap chain image to the descriptors in shader
-			vkCmdBindDescriptorSets(dumpCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &dumpDescriptorSets, 0, nullptr);
+			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &offscreen.descriptorSet, 0, nullptr);
 
-			vkCmdDrawIndexed(dumpCommandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
-			vkCmdEndRenderPass(dumpCommandBuffer);
+			vkCmdEndRenderPass(commandBuffer);
 
-			if (vkEndCommandBuffer(dumpCommandBuffer) != VK_SUCCESS) {
-				 throw std::runtime_error("failed to record dump command buffer!");
+			if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+				 throw std::runtime_error("failed to record offscreen command buffer!");
 			}
 	}
 
 
+
+	void prepareOffscreen(){
+		offscreen.width = WIDTH;
+		offscreen.height = HEIGHT;
+		
+		//create base color image & view
+		createImage(offscreen.width, offscreen.height, COLOR_FORMAT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, offscreen.baseColor.image, offscreen.baseColor.mem);
+		offscreen.baseColor.view = createImageView(offscreen.baseColor.image, COLOR_FORMAT, VK_IMAGE_ASPECT_COLOR_BIT);
+		//create mask color image & view
+		createImage(offscreen.width, offscreen.height, COLOR_FORMAT, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, offscreen.maskColor.image, offscreen.maskColor.mem);
+		offscreen.maskColor.view = createImageView(offscreen.maskColor.image, COLOR_FORMAT, VK_IMAGE_ASPECT_COLOR_BIT);
+		//create depth image & view
+		VkFormat depthFormat = findDepthFormat();
+		createImage(offscreen.width, offscreen.height, depthFormat, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, offscreen.depth.image, offscreen.depth.mem);
+		offscreen.depth.view = createImageView(offscreen.depth.image, depthFormat, VK_IMAGE_ASPECT_DEPTH_BIT);
+
+		//create uniform buffer
+		VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+		createBuffer(bufferSize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, offscreen.uniformBuffer, offscreen.uniformBufferMemory);
+
+		//create descriptor pool
+		createDescriptorPoolOffscreen();
+		//create descriptor set
+		createDescriptorSetOffscreen();
+
+		//create render pass
+		createRenderPass(COLOR_FORMAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, offscreen.renderPass);
+
+		//create base & mask graphics pipeline
+		createGraphicsPipeline(0, offscreen.renderPass, offscreen.baseGraphicsPipeline, offscreen.basePipelineLayout);
+		createGraphicsPipeline(1, offscreen.renderPass, offscreen.maskGraphicsPipeline, offscreen.maskPipelineLayout);
+
+		//create base & mask framebuffer
+		createFramebufferOffscreen(offscreen.baseColor.view, offscreen.depth.view, offscreen.baseFramebuffer);
+		createFramebufferOffscreen(offscreen.maskColor.view, offscreen.depth.view, offscreen.maskFramebuffer);
+
+		//create base & mask command buffer
+		createCommandBufferOffscreen(offscreen.baseCommandBuffer, offscreen.baseFramebuffer, offscreen.baseGraphicsPipeline, offscreen.basePipelineLayout);
+		createCommandBufferOffscreen(offscreen.maskCommandBuffer, offscreen.maskFramebuffer, offscreen.maskGraphicsPipeline, offscreen.maskPipelineLayout);
+	}
+
 	void dump() {
-		updateUniformBufferDump();
+		updateUniformBufferOffscreen();
 		VkSubmitInfo submitInfo{};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-		submitInfo.waitSemaphoreCount = 0;
-		submitInfo.pWaitSemaphores = nullptr;
-		submitInfo.pWaitDstStageMask = nullptr;
 
-		submitInfo.commandBufferCount = 1;
-		submitInfo.pCommandBuffers = &dumpCommandBuffer;
-
-		submitInfo.signalSemaphoreCount = 0;
-		submitInfo.pSignalSemaphores = nullptr;
-
+		std::array<VkCommandBuffer, 2> commandBufs = {offscreen.baseCommandBuffer, offscreen.maskCommandBuffer};
+		submitInfo.commandBufferCount = 2;
+		submitInfo.pCommandBuffers = commandBufs.data();
 
 		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-			throw std::runtime_error("failed to submit dump command buffer!");
+			throw std::runtime_error("failed to submit base command buffer!");
 		}
 
-		saveOutputColorTexture("/home/o/dump.ppm", -3);
+		saveOutputColorTexture("/home/o/offscreen_base.ppm", offscreen.baseColor.image);
+		saveOutputColorTexture("/home/o/offscreen_mask.ppm", offscreen.maskColor.image);
 	}
 
 
-	void cleanupDump(){
+	void cleanupOffscreen(){
+		//framebuffers
+		vkDestroyFramebuffer(device, offscreen.baseFramebuffer, nullptr);
+		vkDestroyFramebuffer(device, offscreen.maskFramebuffer, nullptr);
 
-		vkDestroyFramebuffer(device, dumpFramebuffer, nullptr);
-		vkDestroyImageView(device, dumpImageView, nullptr);
-		vkFreeMemory(device, dumpImageMemory, nullptr);
-		vkDestroyImage(device, dumpImage, nullptr);
-		vkDestroyBuffer(device, dumpUniformBuffers, nullptr);
-		vkFreeMemory(device, dumpUniformBuffersMemory, nullptr);
-		vkDestroyDescriptorPool(device, dumpDescriptorPool, nullptr);
+		//baseColor
+		vkDestroyImageView(device, offscreen.baseColor.view, nullptr);
+		vkFreeMemory(device, offscreen.baseColor.mem, nullptr);
+		vkDestroyImage(device, offscreen.baseColor.image, nullptr);
+		//maskColor
+		vkDestroyImageView(device, offscreen.maskColor.view, nullptr);
+		vkFreeMemory(device, offscreen.maskColor.mem, nullptr);
+		vkDestroyImage(device, offscreen.maskColor.image, nullptr);
+		//depth
+		vkDestroyImageView(device, offscreen.depth.view, nullptr);
+		vkFreeMemory(device, offscreen.depth.mem, nullptr);
+		vkDestroyImage(device, offscreen.depth.image, nullptr);
 
+		//uniform buffer
+		vkDestroyBuffer(device, offscreen.uniformBuffer, nullptr);
+		vkFreeMemory(device, offscreen.uniformBufferMemory, nullptr);
 
+		//descriptor pool
+		vkDestroyDescriptorPool(device, offscreen.descriptorPool, nullptr);
+
+		//render pass
+		vkDestroyRenderPass(device, offscreen.renderPass, nullptr);
+
+		//graphics pipelines
+		vkDestroyPipeline(device, offscreen.baseGraphicsPipeline, nullptr);
+		vkDestroyPipeline(device, offscreen.maskGraphicsPipeline, nullptr);
+		//pipeline layout
+		vkDestroyPipelineLayout(device, offscreen.basePipelineLayout, nullptr);
+		vkDestroyPipelineLayout(device, offscreen.maskPipelineLayout, nullptr);
 	}
 
 
@@ -2266,10 +2332,12 @@ void createTextureImage() {
 //------<MAIN LOOP>------
 	void mainLoop() {
 		dump();
+		/*
 		while(!glfwWindowShouldClose(window)){
 			glfwPollEvents();
 			drawFrame();
 		}
+		*/
 		vkDeviceWaitIdle(device);
 
 	}
@@ -2278,6 +2346,12 @@ void createTextureImage() {
 //------</CLEANUP>------
 
 	void cleanupSwapChain(){
+
+
+		//swap chain
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
+
+/*
 		//depth
 		vkDestroyImageView(device, depthImageView, nullptr);
 		vkDestroyImage(device, depthImage, nullptr);
@@ -2309,6 +2383,7 @@ void createTextureImage() {
 		}
 		//descriptor pool
 		vkDestroyDescriptorPool(device, descriptorPool, nullptr);
+*/
 
 	}
 
@@ -2333,11 +2408,13 @@ void createTextureImage() {
 		//free vertex buffer memory
 		vkFreeMemory(device, vertexBufferMemory, nullptr);
 		//sync objects
+/*
 		for(size_t i=0; i<MAX_FRAMES_IN_FLIGHT; i++){
 			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
 			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
 			vkDestroyFence(device, inFlightFences[i], nullptr);
 		}
+*/
 		//command pool
 		vkDestroyCommandPool(device, commandPool, nullptr);
 		//logdev
