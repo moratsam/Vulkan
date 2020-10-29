@@ -285,19 +285,6 @@ private:
 	//to hold framebuffers
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
-	//DUMP
-	/*
-	VkImage dumpImage;
-	VkDeviceMemory dumpImageMemory;
-	VkImageView dumpImageView;
-	VkFramebuffer dumpFramebuffer;
-	VkBuffer dumpUniformBuffers;
-	VkDeviceMemory dumpUniformBuffersMemory;
-	VkDescriptorPool dumpDescriptorPool;
-	VkDescriptorSet dumpDescriptorSets;
-	VkCommandBuffer dumpCommandBuffer;
-	*/
-	
 	//handle for render pass
 	VkRenderPass renderPass;
 	//descriptor layout
@@ -467,15 +454,6 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 //		createDescriptorSets();
 //		createCommandBuffers();
 //		createSyncObjects();
-
-		/*
-		createResourcesDump();
-		createFramebufferDump();
-		createUniformBuffersDump();
-		createDescriptorPoolDump();
-		createDescriptorSetsDump();
-		createCommandBufferDump();
-		*/
 
 		prepareOffscreen();
 	}
@@ -733,7 +711,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createInfo.imageColorSpace = surfaceFormat.colorSpace;
 		createInfo.imageExtent = extent;
 		createInfo.imageArrayLayers = 1;
-		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+		createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 		
 		QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
 		uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
@@ -1713,6 +1691,13 @@ void createTextureImage() {
 			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
+		//PRESENT_SRC -> UNDEF
+		if(oldLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR && newLayout == VK_IMAGE_LAYOUT_UNDEFINED){
+			barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			barrier.dstAccessMask = 0;
+			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+			destinationStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		}
 		//TRANSFER_DST -> GENERAL
 		else if(oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_GENERAL){
 			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -1720,9 +1705,9 @@ void createTextureImage() {
 			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
-		//TRANSFER_SRC -> PRESENT_SRC
-		else if(oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR){
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		//TRANSFER_DST -> PRESENT_SRC_KHR
+		else if(oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR){
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
@@ -1733,6 +1718,20 @@ void createTextureImage() {
 			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 			destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		}
+		//TRANSFER_DST -> UNDEF
+		else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_UNDEFINED) {
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.dstAccessMask = 0;
+			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+			destinationStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		}
+		//TRANSFER_SRC -> PRESENT_SRC_KHR
+		else if(oldLayout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR){
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+			destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 		}
 		//UNDEF -> TRANSFER_DST
 		else if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
@@ -2269,23 +2268,75 @@ void createTextureImage() {
 		createCommandBufferOffscreen(offscreen.maskCommandBuffer, offscreen.maskFramebuffer, offscreen.maskGraphicsPipeline, offscreen.maskPipelineLayout);
 	}
 
-	void dump() {
-		updateUniformBufferOffscreen();
-		VkSubmitInfo submitInfo{};
-		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-		std::array<VkCommandBuffer, 2> commandBufs = {offscreen.baseCommandBuffer, offscreen.maskCommandBuffer};
-		submitInfo.commandBufferCount = 2;
-		submitInfo.pCommandBuffers = commandBufs.data();
+	void dumpOffscreen() {
+		std::string basePathPrefix = "/home/o/dump/offscreen_base";
+		std::string maskPathPrefix = "/home/o/dump/offscreen_mask";
+		std::string ext = ".ppm";
 
-		if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-			throw std::runtime_error("failed to submit base command buffer!");
+		for(int n=0; n<15; n++){
+			updateUniformBufferOffscreen();
+
+			VkSubmitInfo submitInfo{};
+			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+			std::array<VkCommandBuffer, 2> commandBufs = {offscreen.baseCommandBuffer, offscreen.maskCommandBuffer};
+			submitInfo.commandBufferCount = 2;
+			submitInfo.pCommandBuffers = commandBufs.data();
+
+			if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+				throw std::runtime_error("failed to submit base command buffer!");
+			}
+			
+			std::string basePath = basePathPrefix + std::to_string(n) + ext;
+			std::string maskPath = maskPathPrefix + std::to_string(n) + ext;
+			saveOutputColorTexture(basePath, offscreen.baseColor.image);
+			saveOutputColorTexture(maskPath, offscreen.maskColor.image);
 		}
 
-		saveOutputColorTexture("/home/o/offscreen_base.ppm", offscreen.baseColor.image);
-		saveOutputColorTexture("/home/o/offscreen_mask.ppm", offscreen.maskColor.image);
 	}
 
+
+	void presentOffscreen(){
+		
+		uint32_t imageIndex;
+		VkResult result = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX, nullptr, VK_NULL_HANDLE, &imageIndex);
+
+		std::cout << "a sm kurba tle " << std::endl << std::endl;
+		if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+			recreateSwapChain();
+			return;
+		} else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+			throw std::runtime_error("failed to acquire swap chain image!");
+		}
+
+		blit(offscreen.baseColor.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapChainImages[imageIndex], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+
+		//configure presentation
+		VkPresentInfoKHR presentInfo{};
+		presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+
+		VkSwapchainKHR swapChains[] = {swapChain};
+		presentInfo.swapchainCount = 1;
+		presentInfo.pSwapchains = swapChains;
+		presentInfo.pImageIndices = &imageIndex;
+
+		//to check result in case of multiple swap chains
+		presentInfo.pResults = nullptr; // Optional
+
+		result = vkQueuePresentKHR(presentQueue, &presentInfo);
+
+		if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || framebufferResized) {
+			framebufferResized = false;
+			recreateSwapChain();
+		} else if (result != VK_SUCCESS) {
+			throw std::runtime_error("failed to present swap chain image!");
+		}
+
+		//crude; forces only 1 frame in pipeline
+		//vkQueueWaitIdle(presentQueue);
+
+	}
 
 	void cleanupOffscreen(){
 		//framebuffers
@@ -2331,12 +2382,13 @@ void createTextureImage() {
 //------<>------
 //------<MAIN LOOP>------
 	void mainLoop() {
-		dump();
-		/*
+		dumpOffscreen();
 		while(!glfwWindowShouldClose(window)){
 			glfwPollEvents();
-			drawFrame();
+			//drawFrame();
+			presentOffscreen();
 		}
+		/*
 		*/
 		vkDeviceWaitIdle(device);
 
