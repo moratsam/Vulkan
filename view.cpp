@@ -210,19 +210,6 @@ private:
 	//to hold framebuffers
 	std::vector<VkFramebuffer> swapChainFramebuffers;
 
-	//DUMP
-	VkImage dumpImage;
-	VkDeviceMemory dumpImageMemory;
-	VkImageView dumpImageView;
-	VkFramebuffer dumpFramebuffer;
-	VkBuffer dumpUniformBuffers;
-	VkDeviceMemory dumpUniformBuffersMemory;
-	VkDescriptorSetLayout dumpDescriptorSetLayout;
-	VkDescriptorPool dumpDescriptorPool;
-	VkDescriptorSet dumpDescriptorSets;
-	VkCommandBuffer dumpCommandBuffer;
-
-	
 	//handle for render pass
 	VkRenderPass renderPass;
 	//descriptor layout
@@ -1410,7 +1397,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 			std::string dump_fname = DUMP_PATH + "screenshot" + std::to_string(screenshotNum) + ".ppm";
 			saveOutputColorTexture(dump_fname, swapChainImages[currentImage]);
 			screenshotNum++;
-			usleep(100*1000);
+			usleep(100*1000); //microseconds
 		}
 
 	}
@@ -1789,7 +1776,6 @@ void createTextureImage() {
 
 //------</DEPTH>------
 //------<DUMP>------
-
 
 	bool checkBlitSupport(VkFormat format){
 		// Check blit support for source and destination
