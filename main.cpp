@@ -28,7 +28,7 @@ const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 #define COLOR_FORMAT VK_FORMAT_R8G8B8A8_SRGB
 
-const std::string path = "/home/o/color.ppm/";
+const std::string DUMP_PATH = "/home/o/kias/vulkan/o/dump/";
 
 #ifdef NDEBUG
 	const bool enableValidationLayers = false;
@@ -137,16 +137,16 @@ struct FramebufferAttachment{
 
 struct Offscreen{
 	int32_t width, height;
-	VkFramebuffer baseFramebuffer, maskFramebuffer;
+	VkFramebuffer framebuffer;
 	FramebufferAttachment baseColor, maskColor, depth;
 	VkRenderPass renderPass;
-	VkPipelineLayout basePipelineLayout, maskPipelineLayout;
-	VkPipeline baseGraphicsPipeline, maskGraphicsPipeline;
+	VkPipelineLayout pipelineLayout;
+	VkPipeline graphicsPipeline;
 	VkBuffer uniformBuffer;
 	VkDeviceMemory uniformBufferMemory;
 	VkDescriptorPool descriptorPool;
 	VkDescriptorSet descriptorSet;
-	VkCommandBuffer baseCommandBuffer, maskCommandBuffer;
+	VkCommandBuffer commandBuffer;
 } offscreen;
 
 //------</STRUCTS>------
@@ -440,7 +440,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 //		createImageViews();
 //		createRenderPass(swapChainImageFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, renderPass);
 		createDescriptorSetLayout();
-//		createGraphicsPipeline(0, renderPass, graphicsPipeline, pipelineLayout);
+//		createGraphicsPipeline(renderPass, graphicsPipeline, pipelineLayout);
 		createCommandPool();
 //		createDepthResources();
 //		createFramebuffers();
@@ -768,7 +768,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		createSwapChain();
 		createImageViews();
 		createRenderPass(swapChainImageFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, renderPass);
-		createGraphicsPipeline(0, renderPass, graphicsPipeline, pipelineLayout);
+		createGraphicsPipeline(renderPass, graphicsPipeline, pipelineLayout);
 		createDepthResources();
 		createFramebuffers();
 		createUniformBuffers();
@@ -906,16 +906,10 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		return shaderModule;
 	}
 
-	void createGraphicsPipeline(bool mask, VkRenderPass& renderPass, VkPipeline& graphicsPipeline, VkPipelineLayout& pipelineLayout){
-		std::vector<char> vertShaderCode, fragShaderCode;
-		if(mask){
-			vertShaderCode = readFile("shaders/mask_vert.spv");
-			fragShaderCode = readFile("shaders/mask_frag.spv");
-		}
-		else{
-			vertShaderCode = readFile("shaders/vert.spv");
-			fragShaderCode = readFile("shaders/frag.spv");	
-		}
+	void createGraphicsPipeline(VkRenderPass& renderPass, VkPipeline& graphicsPipeline, VkPipelineLayout& pipelineLayout){
+
+		auto vertShaderCode = readFile("shaders/vert.spv");
+		auto fragShaderCode = readFile("shaders/frag.spv");	
 		VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
 		VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
 
@@ -988,7 +982,7 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 		rasterizer.depthClampEnable = VK_FALSE;
 		rasterizer.rasterizerDiscardEnable = VK_FALSE;
 		//If fragment fills whole polygon/ just edge/point
-		rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+		rasterizer.polygonMode = VK_POLYGON_MODE_LINE;
 
 		rasterizer.lineWidth = 3.0f;
 		rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
@@ -1026,22 +1020,18 @@ void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT& create
 
 		//COLOR BLENDING
 		//combine color from frag shader w color already in framebuffer
-		VkPipelineColorBlendAttachmentState colorBlendAttachment{};
-		colorBlendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-		colorBlendAttachment.blendEnable = VK_FALSE;
-		colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-		colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-		colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD; // Optional
-		colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // Optional
-		colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO; // Optional
-		colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD; // Optional
+		std::array<VkPipelineColorBlendAttachmentState, 2> colorBlendAttachments {};
+		colorBlendAttachments[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		colorBlendAttachments[0].blendEnable = VK_FALSE;
+		colorBlendAttachments[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+		colorBlendAttachments[1].blendEnable = VK_FALSE;
 
 		VkPipelineColorBlendStateCreateInfo colorBlending{};
 		colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 		colorBlending.logicOpEnable = VK_FALSE;
 		colorBlending.logicOp = VK_LOGIC_OP_COPY; // Optional
-		colorBlending.attachmentCount = 1;
-		colorBlending.pAttachments = &colorBlendAttachment;
+		colorBlending.attachmentCount = static_cast<uint32_t>(colorBlendAttachments.size());
+		colorBlending.pAttachments = colorBlendAttachments.data();
 		colorBlending.blendConstants[0] = 0.0f; // Optional
 		colorBlending.blendConstants[1] = 0.0f; // Optional
 		colorBlending.blendConstants[2] = 0.0f; // Optional
@@ -2036,7 +2026,7 @@ void createTextureImage() {
 
 		file.close();
 
-		std::cout << "Screenshot saved to disk" << std::endl;
+		//std::cout << "Screenshot saved to disk" << std::endl;
 
 		// Clean up resources
 		vkUnmapMemory(device, dstImageMemory);
@@ -2151,11 +2141,92 @@ void createTextureImage() {
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 	}
 
-	void createFramebufferOffscreen(VkImageView& colorView, VkImageView& depthView, VkFramebuffer& framebuffer) {
 
-			std::array<VkImageView, 2> attachments = {
-				 colorView,
-				 depthView
+	//specify framebuffer attachments that will be used while rendering. Pe how many color and depth buffers there will be
+	void createRenderPassOffscreen() {
+		std::array<VkAttachmentDescription, 3> attachmentDescs = {};
+		for(uint32_t i=0; i<3; i++){
+			attachmentDescs[i].samples = VK_SAMPLE_COUNT_1_BIT;
+			attachmentDescs[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+			attachmentDescs[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+			attachmentDescs[i].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+			attachmentDescs[i].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;	
+			attachmentDescs[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			attachmentDescs[i].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			if(i==2){ //depth
+				attachmentDescs[i].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				attachmentDescs[i].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+			}
+		}
+
+		//format
+		attachmentDescs[0].format = COLOR_FORMAT;
+		attachmentDescs[1].format = COLOR_FORMAT;
+		attachmentDescs[2].format = findDepthFormat();
+
+
+		//add ref to color attachment for subpasses
+		std::vector<VkAttachmentReference> colorReferences;
+		colorReferences.push_back({0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
+		colorReferences.push_back({1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL});
+
+		//add ref to depth attachment.
+		VkAttachmentReference depthReference{};
+		depthReference.attachment = 2;
+		depthReference.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+		//describe subpass
+		VkSubpassDescription subpass{};
+		subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+		subpass.colorAttachmentCount = static_cast<uint32_t>(colorReferences.size());
+		subpass.pColorAttachments = colorReferences.data();
+		subpass.pDepthStencilAttachment = &depthReference;
+
+		//adding dependency as per 'rend and pres'
+		std::array<VkSubpassDependency, 2> dependencies;
+
+		dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+		dependencies[0].dstSubpass = 0;
+		//wait for color attachment
+		dependencies[0].srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[0].srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		dependencies[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[0].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+		dependencies[1].srcSubpass = 0;
+		dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+		//wait for color attachment
+		dependencies[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+		dependencies[1].dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+		dependencies[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		dependencies[1].dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+		dependencies[1].dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT;
+
+
+		//create render pass
+		VkRenderPassCreateInfo renderPassInfo{};
+		renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		renderPassInfo.attachmentCount = static_cast<uint32_t>(attachmentDescs.size());
+		renderPassInfo.pAttachments = attachmentDescs.data();
+		renderPassInfo.subpassCount = 1;
+		renderPassInfo.pSubpasses = &subpass;
+		renderPassInfo.dependencyCount = 2;
+		renderPassInfo.pDependencies = dependencies.data();
+
+		if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &offscreen.renderPass) != VK_SUCCESS){
+			throw std::runtime_error("failed to create offscreen render pass!");
+		}
+
+	}
+
+
+	void createFramebufferOffscreen() {
+
+			std::array<VkImageView, 3> attachments = {
+				 offscreen.baseColor.view,
+				 offscreen.maskColor.view,
+				 offscreen.depth.view
 			};
 
 			VkFramebufferCreateInfo framebufferInfo{};
@@ -2167,65 +2238,67 @@ void createTextureImage() {
 			framebufferInfo.height = offscreen.height;
 			framebufferInfo.layers = 1;
 
-			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &framebuffer) != VK_SUCCESS) {
+			if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &offscreen.framebuffer) != VK_SUCCESS) {
 				 throw std::runtime_error("failed to create offscreen framebuffer!");
 			}
 	}
 
 
-	void createCommandBufferOffscreen(VkCommandBuffer& commandBuffer, VkFramebuffer& framebuffer, VkPipeline& graphicsPipeline, VkPipelineLayout& pipelineLayout) {
+	void createCommandBufferOffscreen() {
+		
+
 		VkCommandBufferAllocateInfo allocInfo{};
 		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 		allocInfo.commandPool = commandPool;
 		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 		allocInfo.commandBufferCount = 1;
 
-		if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
+		if (vkAllocateCommandBuffers(device, &allocInfo, &offscreen.commandBuffer) != VK_SUCCESS) {
 			throw std::runtime_error("failed to allocate offscreen command buffer!");
 		}
 
 			VkCommandBufferBeginInfo beginInfo{};
 			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
-			if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+			if (vkBeginCommandBuffer(offscreen.commandBuffer, &beginInfo) != VK_SUCCESS) {
 				 throw std::runtime_error("failed to begin recording offscreen command buffer!");
 			}
 
 			VkRenderPassBeginInfo renderPassInfo{};
 			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 			renderPassInfo.renderPass = offscreen.renderPass;
-			renderPassInfo.framebuffer = framebuffer;
+			renderPassInfo.framebuffer = offscreen.framebuffer;
 			renderPassInfo.renderArea.offset = {0, 0};
 			renderPassInfo.renderArea.extent.width = offscreen.width;
 			renderPassInfo.renderArea.extent.height= offscreen.height;
 
-			std::array<VkClearValue, 2> clearValues{};
+			std::array<VkClearValue, 3> clearValues{};
 			clearValues[0].color = {0.0f, 0.0f, 0.0f, 1.0f};
-			clearValues[1].depthStencil = {1.0f, 0};
+			clearValues[1].color = {0.0f, 0.0f, 0.0f, 1.0f};
+			clearValues[2].depthStencil = {1.0f, 0};
 			renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 			renderPassInfo.pClearValues = clearValues.data();
 
-			vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdBeginRenderPass(offscreen.commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
-			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+			vkCmdBindPipeline(offscreen.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, offscreen.graphicsPipeline);
 
 			VkBuffer vertexBuffers[] = {vertexBuffer};
 			VkDeviceSize offsets[] = {0};
-			vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
-			vkCmdBindIndexBuffer(commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
+			vkCmdBindVertexBuffers(offscreen.commandBuffer, 0, 1, vertexBuffers, offsets);
+			vkCmdBindIndexBuffer(offscreen.commandBuffer, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
 
 			//bind descriptor set for each swap chain image to the descriptors in shader
-			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &offscreen.descriptorSet, 0, nullptr);
+			vkCmdBindDescriptorSets(offscreen.commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, offscreen.pipelineLayout, 0, 1, &offscreen.descriptorSet, 0, nullptr);
 
-			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
+			vkCmdDrawIndexed(offscreen.commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0, 0, 0);
 
-			vkCmdEndRenderPass(commandBuffer);
+			vkCmdEndRenderPass(offscreen.commandBuffer);
 
-			if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+			if (vkEndCommandBuffer(offscreen.commandBuffer) != VK_SUCCESS) {
 				 throw std::runtime_error("failed to record offscreen command buffer!");
 			}
 	}
-
 
 
 	void prepareOffscreen(){
@@ -2253,46 +2326,54 @@ void createTextureImage() {
 		createDescriptorSetOffscreen();
 
 		//create render pass
-		createRenderPass(COLOR_FORMAT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, offscreen.renderPass);
+		createRenderPassOffscreen();
 
-		//create base & mask graphics pipeline
-		createGraphicsPipeline(0, offscreen.renderPass, offscreen.baseGraphicsPipeline, offscreen.basePipelineLayout);
-		createGraphicsPipeline(1, offscreen.renderPass, offscreen.maskGraphicsPipeline, offscreen.maskPipelineLayout);
+		//create graphics pipeline
+		createGraphicsPipeline(offscreen.renderPass, offscreen.graphicsPipeline, offscreen.pipelineLayout);
 
-		//create base & mask framebuffer
-		createFramebufferOffscreen(offscreen.baseColor.view, offscreen.depth.view, offscreen.baseFramebuffer);
-		createFramebufferOffscreen(offscreen.maskColor.view, offscreen.depth.view, offscreen.maskFramebuffer);
+		//create framebuffer
+		createFramebufferOffscreen();
 
-		//create base & mask command buffer
-		createCommandBufferOffscreen(offscreen.baseCommandBuffer, offscreen.baseFramebuffer, offscreen.baseGraphicsPipeline, offscreen.basePipelineLayout);
-		createCommandBufferOffscreen(offscreen.maskCommandBuffer, offscreen.maskFramebuffer, offscreen.maskGraphicsPipeline, offscreen.maskPipelineLayout);
+		//create command buffer
+		createCommandBufferOffscreen();
 	}
 
 
 	void dumpOffscreen() {
-		std::string basePathPrefix = "/home/o/dump/offscreen_base";
-		std::string maskPathPrefix = "/home/o/dump/offscreen_mask";
+		std::string basePathPrefix = DUMP_PATH+"offscreen_base";
+		std::string maskPathPrefix = DUMP_PATH+"offscreen_mask";
 		std::string ext = ".ppm";
 
-		for(int n=0; n<15; n++){
+		std::cout << "dumping.." << std::endl << std::endl;
+
+		int runs=60;
+		for(int n=0; n<runs; n++){
 			updateUniformBufferOffscreen();
 
 			VkSubmitInfo submitInfo{};
 			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-			std::array<VkCommandBuffer, 2> commandBufs = {offscreen.baseCommandBuffer, offscreen.maskCommandBuffer};
-			submitInfo.commandBufferCount = 2;
-			submitInfo.pCommandBuffers = commandBufs.data();
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &offscreen.commandBuffer;
 
 			if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
 				throw std::runtime_error("failed to submit base command buffer!");
 			}
-			
-			std::string basePath = basePathPrefix + std::to_string(n) + ext;
-			std::string maskPath = maskPathPrefix + std::to_string(n) + ext;
+			std::string basePath = basePathPrefix;
+			std::string maskPath = maskPathPrefix;
+			int lenDif = std::to_string(runs).size() - std::to_string(n).size();
+			while(lenDif){
+				basePath += "0";
+				maskPath += "0";
+				lenDif--;
+			}
+			basePath += std::to_string(n) + ext;
+			maskPath += std::to_string(n) + ext;
 			saveOutputColorTexture(basePath, offscreen.baseColor.image);
 			saveOutputColorTexture(maskPath, offscreen.maskColor.image);
 		}
+
+		std::cout << "Screenshots dumped to disk at: " << DUMP_PATH << std::endl << std::endl;
 
 	}
 
@@ -2334,14 +2415,16 @@ void createTextureImage() {
 		}
 
 		//crude; forces only 1 frame in pipeline
-		//vkQueueWaitIdle(presentQueue);
+		vkQueueWaitIdle(presentQueue);
 
 	}
 
 	void cleanupOffscreen(){
 		//framebuffers
-		vkDestroyFramebuffer(device, offscreen.baseFramebuffer, nullptr);
-		vkDestroyFramebuffer(device, offscreen.maskFramebuffer, nullptr);
+		vkDestroyFramebuffer(device, offscreen.framebuffer, nullptr);
+
+		//command buffer
+		vkFreeCommandBuffers(device, commandPool, 1, &offscreen.commandBuffer);
 
 		//baseColor
 		vkDestroyImageView(device, offscreen.baseColor.view, nullptr);
@@ -2367,11 +2450,9 @@ void createTextureImage() {
 		vkDestroyRenderPass(device, offscreen.renderPass, nullptr);
 
 		//graphics pipelines
-		vkDestroyPipeline(device, offscreen.baseGraphicsPipeline, nullptr);
-		vkDestroyPipeline(device, offscreen.maskGraphicsPipeline, nullptr);
+		vkDestroyPipeline(device, offscreen.graphicsPipeline, nullptr);
 		//pipeline layout
-		vkDestroyPipelineLayout(device, offscreen.basePipelineLayout, nullptr);
-		vkDestroyPipelineLayout(device, offscreen.maskPipelineLayout, nullptr);
+		vkDestroyPipelineLayout(device, offscreen.pipelineLayout, nullptr);
 	}
 
 
@@ -2383,13 +2464,14 @@ void createTextureImage() {
 //------<MAIN LOOP>------
 	void mainLoop() {
 		dumpOffscreen();
+/*
 		while(!glfwWindowShouldClose(window)){
 			glfwPollEvents();
 			//drawFrame();
 			presentOffscreen();
 		}
-		/*
-		*/
+*/
+
 		vkDeviceWaitIdle(device);
 
 	}
