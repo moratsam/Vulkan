@@ -38,7 +38,6 @@ struct UniformBufferObject{
 	alignas(16) glm::mat4 model;
 	alignas(16) glm::mat4 view;
 	alignas(16) glm::mat4 proj;
-	alignas(16) glm::vec3 maskColor;
 };
 
 struct Offscreen{
@@ -52,7 +51,7 @@ struct Offscreen{
 	VkDescriptorPool descriptorPool;
 	VkDescriptorSetLayout descriptorSetLayout;
 	VkDescriptorSet descriptorSet;
-	std::array<VkCommandBuffer, 3> commandBuffers;
+	VkCommandBuffer commandBuffer;
 } offscreen;
 
 //------</STRUCTS>------
@@ -225,8 +224,13 @@ private:
 		pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 		pipelineLayoutInfo.setLayoutCount = 1; // Optional
 		pipelineLayoutInfo.pSetLayouts = &offscreen.descriptorSetLayout; // Optional
-		pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional
-		pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional
+		//push constants for mask color
+		VkPushConstantRange pushConstantRange{};
+		pushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+		pushConstantRange.offset = 0;
+		pushConstantRange.size = static_cast<uint32_t>(sizeof(glm::vec3));
+		pipelineLayoutInfo.pushConstantRangeCount = 1; // Optional
+		pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange; // Optional
 
 		if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS){
 			throw std::runtime_error("failed to create pipeline layout!");
@@ -265,24 +269,6 @@ private:
 	}
 //------</GRAPHICS PIPELINE>------
 //---------------------------------OFFSCREEN------------------------------------------------------
-	
-	void updateUniformBufferOffscreenMaskColor(glm::vec3 maskCol){
-
-		auto time = globalTime;
-		UniformBufferObject ubo{};
-		ubo.model = glm::rotate(glm::mat4(1.0f), time * glm::radians(45.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.view = glm::lookAt(glm::vec3(3.0f, 1.0f, 0.7f), glm::vec3(0.0f, 0.0f, 0.0f), glm::vec3(0.0f, 0.0f, 1.0f));
-		ubo.proj = glm::perspective(glm::radians(30.0f), offscreen.width / (float) offscreen.height, 0.1f, 10.0f);
-		ubo.proj[1][1] *= -1;
-
-		ubo.maskColor = maskCol;
-
-		void* data;
-		vkMapMemory(device, offscreen.uniformB.mem, 0, sizeof(ubo), 0, &data);
-		memcpy(data, &ubo, sizeof(ubo));
-		vkUnmapMemory(device, offscreen.uniformB.mem);
-	}
-
 
 	void updateUniformBufferOffscreen(){
 			
@@ -513,27 +499,9 @@ private:
 	}
 
 
-	void createCommandBufferOffscreen(VkCommandBuffer& commandBuffer, int indexOffsetNum, int indicesDrawnNum) {
-		
-
-		VkCommandBufferAllocateInfo allocInfo{};
-		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-		allocInfo.commandPool = commandPool;
-		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-		allocInfo.commandBufferCount = 1;
-
-		if (vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer) != VK_SUCCESS) {
-			throw std::runtime_error("failed to allocate offscreen command buffer!");
-		}
-
-			VkCommandBufferBeginInfo beginInfo{};
-			beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-			if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-				 throw std::runtime_error("failed to begin recording offscreen command buffer!");
-			}
-
-
+	void renderObject(uint32_t objectIndex, VkCommandBuffer& commandBuffer){
+			
+			//reuse offscreen render pass
 			VkRenderPassBeginInfo renderPassInfo{};
 			renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
 			renderPassInfo.renderPass = offscreen.renderPass;
@@ -549,7 +517,33 @@ private:
 			renderPassInfo.clearValueCount = static_cast<uint32_t>(clearValues.size());
 			renderPassInfo.pClearValues = clearValues.data();
 
+			//color of mask of object. Object starts at indexOffsetNum and is defined by indicesNum indices.
+			glm::vec3 maskColor;
+			uint32_t indexOffsetNum, indicesNum;
+			switch (objectIndex){
+				case 0: //floor
+					maskColor = glm::vec3(0.0f, 1.0f, 0.0f);
+					indexOffsetNum = 0;
+					indicesNum = 12;
+					break;
+				case 1: //cube
+					maskColor = glm::vec3(0.0f, 0.0f, 0.1f);
+					indexOffsetNum = 12;
+					indicesNum = 72;
+					break;
+				case 2: //pyramid
+					maskColor = glm::vec3(0.1f, 0.0f, 0.0f);
+					indexOffsetNum = 84;
+					indicesNum = 36;
+					break;
+			}
 
+
+			vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+			vkCmdPushConstants(commandBuffer, offscreen.pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec3), &maskColor);
+
+
+			//clear attachments at beginning of every run
 			std::array<VkClearAttachment, 3> clearAttachments{};
 			clearAttachments[0].aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			clearAttachments[0].colorAttachment = 0;
@@ -559,7 +553,6 @@ private:
 			clearAttachments[1].clearValue = clearValues[1];
 			clearAttachments[2].aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 			clearAttachments[2].clearValue = clearValues[2];
-
 
 			VkRect2D rectToClear{};
 			rectToClear.offset = {0, 0};
@@ -573,12 +566,11 @@ private:
 				clearRects[i].layerCount = 1;
 			}
 
-			vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 			if(indexOffsetNum == 0){
 				vkCmdClearAttachments(commandBuffer, static_cast<uint32_t>(clearAttachments.size()), clearAttachments.data(), static_cast<uint32_t>(clearRects.size()), clearRects.data());
 			}
 
-
+			//bind pipeline
 			vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, offscreen.graphicsPipeline);
 
 			VkBuffer vertexBuffers[] = {vertexB.buffer};
@@ -591,13 +583,43 @@ private:
 			//bind descriptor set for each swap chain image to the descriptors in shader
 			vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, offscreen.pipelineLayout, 0, 1, &offscreen.descriptorSet, 0, nullptr);
 
-			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indicesDrawnNum), 1, 0, 0, 0);
+			vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indicesNum), 1, 0, 0, 0);
 
 			vkCmdEndRenderPass(commandBuffer);
 
-			if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
-				 throw std::runtime_error("failed to record offscreen command buffer!");
-			}
+	}
+
+
+	void createCommandBufferOffscreen() {
+
+		//initialise
+		VkCommandBufferAllocateInfo allocInfo{};
+		allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+		allocInfo.commandPool = commandPool;
+		allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+		allocInfo.commandBufferCount = 1;
+
+		if (vkAllocateCommandBuffers(device, &allocInfo, &offscreen.commandBuffer) != VK_SUCCESS) {
+			throw std::runtime_error("failed to allocate offscreen command buffer!");
+		}
+
+		VkCommandBufferBeginInfo beginInfo{};
+		beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+		if (vkBeginCommandBuffer(offscreen.commandBuffer, &beginInfo) != VK_SUCCESS) {
+			 throw std::runtime_error("failed to begin recording offscreen command buffer!");
+		}
+
+		//do actual stuff
+		for(int i=0; i<3; i++){ //for every object
+			renderObject(i, offscreen.commandBuffer);
+		}
+		
+
+		if (vkEndCommandBuffer(offscreen.commandBuffer) != VK_SUCCESS) {
+			 throw std::runtime_error("failed to record offscreen command buffer!");
+		}
+
 	}
 
 
@@ -657,11 +679,8 @@ private:
 		createFramebufferOffscreen();
 
 		//create command buffer
-		createCommandBufferOffscreen(offscreen.commandBuffers[0], 0, 12);
-		createCommandBufferOffscreen(offscreen.commandBuffers[1], 12, 72);
-		createCommandBufferOffscreen(offscreen.commandBuffers[2], 84, 36);
+		createCommandBufferOffscreen();
 	}
-
 
 	void dumpOffscreen() {
 		std::string basePathPrefix = DUMP_PATH+"offscreen_base";
@@ -671,38 +690,20 @@ private:
 		std::cout << "dumping.." << std::endl << std::endl;
 
 
-//		std::array<VkCommandBuffer, 1> tmp_commandBuffers = {offscreen.commandBuffers[1]};
-//		std::array<VkCommandBuffer, 2> tmp_commandBuffers = {offscreen.commandBuffers[0], offscreen.commandBuffers[1]};
-//		std::array<VkCommandBuffer, 3> tmp_commandBuffers = {offscreen.commandBuffers[0], offscreen.commandBuffers[1], offscreen.commandBuffers[2]};
-
-
-		int runs=30;
+		int runs=3;
 		for(int n=0; n<runs; n++){
 			updateUniformBufferOffscreen();
 
-			for(int i=0; i<3; i++){
-				if(i==0){
-					updateUniformBufferOffscreenMaskColor(glm::vec3(0.0f, 1.0f, 0.0f));
-				}
-				else if(i==1){
-					updateUniformBufferOffscreenMaskColor(glm::vec3(1.0f, 0.0f, 0.0f));
-				}
-				else{
-					updateUniformBufferOffscreenMaskColor(glm::vec3(1.0f, 0.0f, 1.0f));
-				}
-/*
-*/					
-				VkSubmitInfo submitInfo{};
-				submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			VkSubmitInfo submitInfo{};
+			submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-				submitInfo.commandBufferCount = 1;
-				submitInfo.pCommandBuffers = &offscreen.commandBuffers[i];
+			submitInfo.commandBufferCount = 1;
+			submitInfo.pCommandBuffers = &offscreen.commandBuffer;
 
-				if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-					throw std::runtime_error("failed to submit offscreen command buffer!");
-				}
-				vkQueueWaitIdle(presentQueue);
+			if (vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+				throw std::runtime_error("failed to submit offscreen command buffer!");
 			}
+
 			std::string basePath = basePathPrefix;
 			std::string maskPath = maskPathPrefix;
 			int lenDif = std::to_string(runs).size() - std::to_string(n).size();
@@ -721,7 +722,6 @@ private:
 		std::cout << "Screenshots dumped to disk at: " << DUMP_PATH << std::endl << std::endl;
 
 	}
-
 
 	void presentOffscreen(){
 		
@@ -768,9 +768,7 @@ private:
 		vkDestroyFramebuffer(device, offscreen.framebuffer, nullptr);
 
 		//command buffer
-		for(int i=0; i<offscreen.commandBuffers.size(); i++){
-			vkFreeCommandBuffers(device, commandPool, 1, &offscreen.commandBuffers[i]);
-		}
+		vkFreeCommandBuffers(device, commandPool, 1, &offscreen.commandBuffer);
 
 		//baseColor
 		vkDestroyImageView(device, offscreen.baseColor.view, nullptr);
